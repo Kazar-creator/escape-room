@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Escape Room</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+  }
+  #gameContainer {
+    position: relative;
+    border: 3px solid #e0c9a6;
+    border-radius: 8px;
+    box-shadow: 0 0 40px rgba(0,0,0,0.8);
+  }
+  canvas {
+    display: block;
+    cursor: pointer;
+  }
+  #ui {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+  }
+  #message {
+    position: absolute;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.85);
+    color: #e0c9a6;
+    padding: 10px 24px;
+    border-radius: 6px;
+    font-size: 16px;
+    opacity: 0;
+    transition: opacity 0.3s;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #message.show { opacity: 1; }
+  #inventory {
+    position: absolute;
+    bottom: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 6px;
+    pointer-events: none;
+  }
+  .inv-slot {
+    width: 52px; height: 52px;
+    background: rgba(0,0,0,0.6);
+    border: 2px solid #e0c9a6;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+  }
+  #hint {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: rgba(0,0,0,0.7);
+    color: #e0c9a6;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    pointer-events: none;
+  }
+  #winOverlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85);
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+  }
+  #winOverlay.show { display: flex; }
+  #winOverlay h1 {
+    color: #ffd700;
+    font-size: 48px;
+    margin-bottom: 16px;
+  }
+  #winOverlay p {
+    color: #e0c9a6;
+    font-size: 18px;
+    margin-bottom: 24px;
+  }
+  #winOverlay button {
+    background: #e0c9a6;
+    color: #1a1a2e;
+    border: none;
+    padding: 12px 32px;
+    font-size: 18px;
+    border-radius: 6px;
+    cursor: pointer;
+    pointer-events: auto;
+    font-family: inherit;
+  }
+  #winOverlay button:hover { background: #f0d9b6; }
+</style>
+</head>
+<body>
+
+<div id="gameContainer">
+  <canvas id="game" width="800" height="600"></canvas>
+  <div id="ui">
+    <div id="hint">🔍 Interagisci con gli oggetti</div>
+    <div id="message"></div>
+    <div id="inventory">
+      <div class="inv-slot" id="slot0"></div>
+      <div class="inv-slot" id="slot1"></div>
+      <div class="inv-slot" id="slot2"></div>
+      <div class="inv-slot" id="slot3"></div>
+    </div>
+    <div id="winOverlay">
+      <h1>🎉 Sei libero!</h1>
+      <p>Sei riuscito a scappare dalla stanza!</p>
+      <button onclick="location.reload()">Rigioca</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 600;
+
+const images = {};
+const imgNames = ['bg', 'door', 'desk', 'drawer', 'drawer_open', 'bookshelf', 'painting', 'safe', 'safe_open', 'lamp', 'lamp_on', 'rug', 'key', 'note', 'book'];
+let loaded = 0;
+
+function preload(cb) {
+  for (const name of imgNames) {
+    const img = new Image();
+    img.onload = img.onerror = () => { loaded++; if (loaded === imgNames.length) cb(); };
+    img.src = 'images/' + name + '.png';
+    images[name] = img;
+  }
+}
+
+const game = {
+  inventory: [],
+  won: false,
+  drawerOpen: false,
+  drawerSearched: false,
+  safeOpen: false,
+  code: '742',
+  codeInput: '',
+  codePhase: false,
+  paintingMoved: false,
+  lampOn: false,
+  message: '',
+  messageTimer: 0,
+  hovered: null,
+};
+
+const objects = [
+  { id: 'door', x: 340, y: 80, w: 120, h: 200, label: 'Porta' },
+  { id: 'desk', x: 550, y: 300, w: 180, h: 120, label: 'Scrivania' },
+  { id: 'drawer', x: 570, y: 380, w: 60, h: 55, label: 'Cassetto' },
+  { id: 'bookshelf', x: 50, y: 160, w: 140, h: 280, label: 'Libreria' },
+  { id: 'painting', x: 430, y: 60, w: 100, h: 80, label: 'Quadro' },
+  { id: 'safe', x: 140, y: 200, w: 80, h: 70, label: 'Cassaforte' },
+  { id: 'lamp', x: 700, y: 200, w: 40, h: 80, label: 'Lampada' },
+  { id: 'rug', x: 300, y: 460, w: 200, h: 80, label: 'Tappeto' },
+];
+
+function drawImage(name, x, y, w, h) {
+  const img = images[name];
+  if (img && img.complete && img.naturalWidth > 0) {
+    ctx.drawImage(img, x, y, w, h);
+  }
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  drawImage('bg', 0, 0, W, H);
+  if (!game.paintingMoved) drawImage('painting', objects[4].x, objects[4].y, objects[4].w, objects[4].h);
+  drawImage('door', objects[0].x, objects[0].y, objects[0].w, objects[0].h);
+  drawImage('desk', objects[1].x, objects[1].y, objects[1].w, objects[1].h);
+  drawImage(game.drawerOpen ? 'drawer_open' : 'drawer', objects[2].x, objects[2].y, objects[2].w, objects[2].h);
+  drawImage('bookshelf', objects[3].x, objects[3].y, objects[3].w, objects[3].h);
+  drawImage('rug', objects[7].x, objects[7].y, objects[7].w, objects[7].h);
+  drawImage(game.lampOn ? 'lamp_on' : 'lamp', objects[6].x, objects[6].y, objects[6].w, objects[6].h);
+  if (game.paintingMoved) drawImage(game.safeOpen ? 'safe_open' : 'safe', objects[5].x, objects[5].y, objects[5].w, objects[5].h);
+  drawHover();
+}
+
+function showMessage(msg) {
+  const el = document.getElementById('message');
+  el.textContent = msg;
+  el.classList.add('show');
+  game.messageTimer = 15;
+}
+
+function updateInventory() {
+  const icons = { '🔑': 'key', '📄': 'note', '📖': 'book' };
+  for (let i = 0; i < 4; i++) {
+    const slot = document.getElementById('slot' + i);
+    const item = game.inventory[i];
+    if (item && icons[item]) {
+      const img = images[icons[item]];
+      if (img && img.complete && img.naturalWidth > 0) {
+        const c = document.createElement('canvas');
+        c.width = 48; c.height = 48;
+        const cx = c.getContext('2d');
+        cx.drawImage(img, 0, 0, 48, 48);
+        slot.innerHTML = ''; slot.appendChild(c);
+      } else { slot.textContent = item; }
+    } else { slot.textContent = item || ''; }
+  }
+}
+
+function findObject(x, y) {
+  for (const o of objects) {
+    if (game.paintingMoved && o.id === 'painting') continue;
+    if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) return o;
+  }
+  return null;
+}
+
+function interact(obj) {
+  switch (obj.id) {
+    case 'door':
+      if (game.inventory.includes('🔑')) {
+        game.won = true;
+        document.getElementById('winOverlay').classList.add('show');
+      } else {
+        showMessage('È chiusa a chiave. Serve una chiave.');
+      }
+      break;
+    case 'desk':
+      showMessage('Una vecchia scrivania di legno.');
+      break;
+    case 'drawer':
+      if (!game.drawerOpen) {
+        game.drawerOpen = true;
+        showMessage('Il cassetto si apre! C\'è un biglietto.');
+        game.drawerSearched = true;
+      } else if (!game.inventory.includes('📄')) {
+        game.inventory.push('📄');
+        updateInventory();
+        showMessage('Hai preso il biglietto: "742".');
+      } else {
+        showMessage('Il cassetto è vuoto.');
+      }
+      break;
+    case 'bookshelf':
+      if (game.inventory.includes('📖')) {
+        showMessage('Hai già esplorato la libreria.');
+        break;
+      }
+      game.inventory.push('📖');
+      updateInventory();
+      showMessage('Un libro parla di una cassaforte nascosta.');
+      break;
+    case 'painting':
+      if (game.paintingMoved) {
+        if (game.safeOpen) {
+          if (!game.inventory.includes('🔑')) {
+            game.inventory.push('🔑');
+            updateInventory();
+            showMessage('Hai preso la chiave!');
+          }
+        } else if (game.codeInput.length > 0) {
+          if (game.codeInput === game.code) {
+            game.safeOpen = true;
+            game.inventory.push('🔑');
+            updateInventory();
+            showMessage('Cassaforte aperta! Chiave trovata!');
+          } else {
+            showMessage('Codice errato.');
+            game.codeInput = '';
+          }
+        } else {
+          game.codePhase = true;
+          showMessage('Digita il codice a 3 cifre.');
+        }
+      } else {
+        game.paintingMoved = true;
+        showMessage('Sposti il quadro... C\'è una cassaforte!');
+      }
+      break;
+    case 'safe':
+      if (game.safeOpen) {
+        if (!game.inventory.includes('🔑')) {
+          game.inventory.push('🔑');
+          updateInventory();
+          showMessage('Chiave presa!');
+        }
+      } else {
+        game.codePhase = true;
+        showMessage('Digita il codice a 3 cifre.');
+      }
+      break;
+    case 'lamp':
+      game.lampOn = !game.lampOn;
+      showMessage(game.lampOn ? 'Lampada accesa.' : 'Lampada spenta.');
+      break;
+    case 'rug':
+      showMessage('Niente sotto il tappeto.');
+      break;
+    default:
+      showMessage('Non sembra utile.');
+  }
+}
+
+canvas.addEventListener('click', (e) => {
+  if (game.won || game.codePhase) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (W / rect.width);
+  const y = (e.clientY - rect.top) * (H / rect.height);
+  const obj = findObject(x, y);
+  if (obj) interact(obj);
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (W / rect.width);
+  const y = (e.clientY - rect.top) * (H / rect.height);
+  game.hovered = findObject(x, y);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (game.codePhase && !game.safeOpen) {
+    if (e.key >= '0' && e.key <= '9' && game.codeInput.length < 3) {
+      game.codeInput += e.key;
+    } else if (e.key === 'Backspace') {
+      game.codeInput = game.codeInput.slice(0, -1);
+    } else if (e.key === 'Enter') {
+      if (game.codeInput === game.code) {
+        game.safeOpen = true;
+        game.inventory.push('🔑');
+        updateInventory();
+        showMessage('Cassaforte aperta! Chiave trovata!');
+      } else {
+        showMessage('Codice sbagliato!');
+        game.codeInput = '';
+      }
+      game.codePhase = false;
+    } else if (e.key === 'Escape') {
+      game.codePhase = false;
+      game.codeInput = '';
+      showMessage('');
+    }
+  }
+});
+
+function drawHover() {
+  if (!game.hovered) return;
+  const o = game.hovered;
+  ctx.strokeStyle = 'rgba(255,215,0,0.6)';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([6, 4]);
+  ctx.strokeRect(o.x, o.y, o.w, o.h);
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.fillRect(o.x, o.y - 24, ctx.measureText(o.label).width + 16, 22);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = '13px monospace';
+  ctx.fillText(o.label, o.x + 8, o.y - 8);
+}
+
+function gameLoop() {
+  render();
+  if (game.messageTimer > 0) {
+    game.messageTimer--;
+    if (game.messageTimer === 0) {
+      document.getElementById('message').classList.remove('show');
+    }
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+preload(() => { gameLoop(); });
+</script>
+</body>
+</html>
